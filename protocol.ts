@@ -2,7 +2,6 @@ import { UUID } from "crypto"
 
 enum MessageType {
     'CALL_FUNCTION',
-    'CLIENT_RESPONSE',
     'GET_CLIENT_DETAILS',
     'GET_CLIENTS',
     'HEARTBEAT',
@@ -12,22 +11,28 @@ enum MessageType {
     'RESULT_OK',    
 }
 
-type RequestError = 
+type Message =
+{
+    type: MessageType;
+    requestId: number;
+    data?: any
+}
+
+type RequestError = Message & 
 {
     type: MessageType.REQUEST_ERROR;
-    data: {description?: string}
+    data: {description: string};
 }
 
-type ResultError = 
+type ResultError = Message &
 {
     type: MessageType.RESULT_ERROR;
-    data: {description?: string}
+    data: {description: string};
 }
 
-type ResultOk = 
+type ResultOk = Message & 
 {
     type: MessageType.RESULT_OK;
-    data?: any;
 }
 
 type ClientInfo = {
@@ -36,45 +41,44 @@ type ClientInfo = {
     //icon: ImageData
 }
 
-type Hello = 
+type Hello = Message & 
 {
     type: MessageType.HELLO;
     data: ClientInfo | null;
 }
 
-type GetClients = 
+type GetClients = Message & 
 {
     type: MessageType.GET_CLIENTS;
-    data: {
-        capacities?: string[];
-    }
+    data: null
 }
 
-type ClientResponse = 
-{
-    type: MessageType.CLIENT_RESPONSE;
-    data: ClientInfo;
-}
-
-type HeartBeat = 
+type HeartBeat = Message & 
 {
     type: MessageType.HEARTBEAT;
+    data: null
 }
 
-type GetClientDetails = 
+type GetClientDetails = Message & 
 {
     type: MessageType.GET_CLIENT_DETAILS;
     data: ClientInfo;
 }
 
-type CallFunction = {
+type CallFunction = Message & {
     type: MessageType.CALL_FUNCTION;
     data: { 
         name: string; functionArgs: any;
     }
 }
 
-export {CallFunction, ClientInfo, ClientResponse, 
+type MessageInfo = 
+{
+    msg: Message; 
+    timer: NodeJS.Timeout;
+}
+
+export {CallFunction, ClientInfo, 
         GetClients, GetClientDetails, HeartBeat, 
-        Hello, MessageType, RequestError, ResultError, ResultOk };
+        Hello, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk };
 

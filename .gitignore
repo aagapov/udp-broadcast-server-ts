@@ -1,12 +1,13 @@
 # Compiled source #
 ###################
+*.bin
 *.com
 *.class
 *.dll
 *.exe
+*.js
 *.o
 *.so
-*.js
 
 # Packages #
 ############
