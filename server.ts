@@ -229,8 +229,8 @@ class Server
                 }, 2000);
     
                 this.requests.set(message.requestId, {msg: message, timer: timer});
-            }, 30000);
-        })
+            });
+        }, 30000)
     }
 
     /**
