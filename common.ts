@@ -1,11 +1,10 @@
-import * as dgram from "node:dgram";
 import { Buffer } from 'node:buffer';
 import { CallFunction, ClientInfo, GetClients, GetClientDetails, 
         HeartBeat, Hello, Message, MessageType, RequestError, ResultError, ResultOk } from './protocol';
-import { UUID } from "node:crypto";
 
 export const ServerPort = 41234;
-export const ClientPort = 5555;
+export const HelloTimeout = 20000;
+export const HeartBeatTimeout = 15000;
 export const AllowedFunctions = ['randomNumber', 'clientFreeMemory', 'hddSpeed'];
 
 export class MessageParser

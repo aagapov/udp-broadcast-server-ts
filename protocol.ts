@@ -1,14 +1,15 @@
 import { UUID } from "crypto"
 
-enum MessageType {
-    'CALL_FUNCTION',
-    'GET_CLIENT_DETAILS',
-    'GET_CLIENTS',
-    'HEARTBEAT',
-    'HELLO',
-    'REQUEST_ERROR', 
-    'RESULT_ERROR',
-    'RESULT_OK',    
+enum MessageType 
+{
+    CALL_FUNCTION = 'CALL_FUNCTION',
+    GET_CLIENT_DETAILS = 'GET_CLIENT_DETAILS',
+    GET_CLIENTS = 'GET_CLIENTS',
+    HEARTBEAT = 'HEARTBEAT',
+    HELLO = 'HELLO',
+    REQUEST_ERROR = 'REQUEST_ERROR', 
+    RESULT_ERROR = 'RESULT_ERROR',
+    RESULT_OK   = 'RESULT_OK',    
 }
 
 type Message =
@@ -35,7 +36,8 @@ type ResultOk = Message &
     type: MessageType.RESULT_OK;
 }
 
-type ClientInfo = {
+type ClientInfo = 
+{
     capacities: string[];
     id: UUID;
     //icon: ImageData
@@ -56,16 +58,17 @@ type GetClients = Message &
 type HeartBeat = Message & 
 {
     type: MessageType.HEARTBEAT;
-    data: null
+    data: {id: UUID}
 }
 
 type GetClientDetails = Message & 
 {
     type: MessageType.GET_CLIENT_DETAILS;
-    data: ClientInfo;
+    data: null;
 }
 
-type CallFunction = Message & {
+type CallFunction = Message & 
+{
     type: MessageType.CALL_FUNCTION;
     data: { 
         name: string; functionArgs: any;

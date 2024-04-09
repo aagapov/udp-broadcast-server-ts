@@ -2,24 +2,30 @@ import * as dgram from 'node:dgram';
 import { Buffer } from 'node:buffer';
 import {CallFunction, ClientInfo, GetClients, GetClientDetails, 
     HeartBeat, Hello, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk } from './protocol';
-import { ClientPort, ServerPort, MessageParser, ReqestIdGenerator } from "./common"
+import { HeartBeatTimeout, HelloTimeout, ServerPort, MessageParser, ReqestIdGenerator } from "./common"
 import { UUID, randomInt, randomUUID } from 'node:crypto';
 import { freemem } from 'node:os';
-import { createWriteStream, writeFile } from 'node:fs';
-import { performance, PerformanceObserver } from 'node:perf_hooks';
-import { Readline } from 'readline/promises';
-import { exit } from 'node:process';
+import { createWriteStream } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 
+/**
+ * @returns random naumbe in range [min, max]
+ */
 function randomNumber(min: number, max: number): number
 {
     return randomInt(min, max);
 }
-
+/**
+  * @returns amount of free RAM 
+  */
 function clientFreeMemory(): number
 {
     return freemem();
 }
-
+/**
+ * Measures time of writing 1MB of zeros on HDD
+ * @returns measuresd time 
+ */
 function hddSpeed() : number
 {
     const chunk = new Uint8Array(1000);
@@ -38,11 +44,16 @@ function hddSpeed() : number
     return toc - tic;
 }
 
+/**
+ * Checks if function was called with right arguments
+ * @returns true if server is on-line, otherwise false
+ */
 function checkFunctionSignture(functionName: string, args: any) : boolean
 {
     if (functionName === 'randomNumber') 
     {
-        return args.size === 2 && !Number.isNaN(Number(args[0])) && !Number.isNaN(Number(args[1]));
+        const array = args as number[];
+        return array.length === 2 && !Number.isNaN(Number(args[0])) && !Number.isNaN(Number(args[1]));
     }
 
     if (functionName === 'clientFreeMemory' ||
@@ -70,11 +81,25 @@ class Client
         MessageType.RESULT_OK
     ];
     private readonly serverPort = ServerPort;
-    private readonly helloTimeout = 20000;
-    private readonly heartbeatTimeout = 15000;
-    private isServerOnline = false;
+    private readonly clientPort = randomNumber(1000, 5000);
+    private readonly helloTimeout = HelloTimeout;
+    private readonly heartbeatTimeout = HeartBeatTimeout;
     private readonly availableFunctions = ["randomNumber, clientFreeMemory, hddSpeed"];
+    private lastHeartBeatTimeStamp = 0;
+   
+    /**
+     * Checks if server is on-line
+     * @returns true if server is on-line, otherwise false
+     */
+    public isServerOnline(): boolean
+    {
+        return Date.now() - this.lastHeartBeatTimeStamp < this.heartbeatTimeout;
+    }
 
+    /**
+     * Generates HELLO message
+     * @returns message of MessageType.Hello
+     */
     private getHelloMessage(): Hello
     {
         return {type: MessageType.HELLO, 
@@ -84,9 +109,12 @@ class Client
 
     private getHearbeatMessage(): HeartBeat
     {
-        return {type: MessageType.HEARTBEAT, requestId: this.requesIdGenerator.next(), data: null};
+        return {type: MessageType.HEARTBEAT, requestId: this.requesIdGenerator.next(), data: { id: this.uuid }};
     }
 
+    /**
+     * Periodically sends HELLO message
+     */
     private sendHello()
     {
         const msg = this.getHelloMessage();
@@ -94,29 +122,29 @@ class Client
         const sendHelloCallBack = () =>
         {
             this.socket.send(message, this.serverPort);
-            console.log("client: ", this.uuid, " sent message: ", msg);
+            console.log("client: ", this.uuid, " sent HELLO message: ", msg);           
         }
 
-        const timer = setTimeout(sendHelloCallBack, 0);
-        this.requests.set(msg.requestId, {msg: msg, timer: timer});
-        
-        //check response timer
+        const oneShotTimer = setTimeout(sendHelloCallBack, 0);
+        this.requests.set(msg.requestId, {msg: msg, timer: oneShotTimer});
+
+         //check response timer
         setTimeout(() =>
         {
-            if (!this.isServerOnline)
+            // If we have not recieved response for the first HELLO message
+            // replace one-shot timer by interval timer
+            if (!this.isServerOnline())
             {
-                clearTimeout(timer);
+                clearTimeout(oneShotTimer);
                 const intervalTimer = setInterval(sendHelloCallBack, this.helloTimeout);
-                this.requests.delete(msg.requestId);
                 this.requests.set(msg.requestId, {msg: msg, timer: intervalTimer});
-            }
-            else
-            {
-                console.log("Server is online!");
-            }
+            }             
         }, 2000);
     }
 
+    /**
+     * Periodically sends HEARTBEAT request
+     */
     private sendHeartBeat()
     {
         const msg = this.getHearbeatMessage();
@@ -124,29 +152,38 @@ class Client
         const timer = setInterval(() => 
         {
             this.socket.send(message, this.serverPort);
-            console.log("client: ", this.uuid, " sent message: ", msg);
+            console.log("client: ", this.uuid, " sent HEARTBEAT message: ", msg);
+            //check response timer
+            setTimeout(() =>
+            {
+                //Check if server sent response for hello message.
+                if (!this.isServerOnline())
+                {
+                    console.log("Server got offline!");
+                    // send hello again if server got offline
+                    clearInterval(timer);
+                    this.requests.delete(msg.requestId);
+                    this.sendHello(); 
+                }
+            }, 2000);
         }, this.heartbeatTimeout);
 
-        this.requests.set(msg.requestId, {msg: msg, timer: timer});   
-
-        //check response timer
-        setTimeout(() =>
-        {
-            // send hello again if server got offline
-            clearInterval(timer);
-            this.isServerOnline = false;            
-            this.requests.delete(msg.requestId);
-            this.sendHello(); 
-            
-        }, 2000);
+        this.requests.set(msg.requestId, {msg: msg, timer: timer});          
     }
 
+    /**
+     * Checks if there is appropriate mapping between client request and server response.
+     * Also checks that response has appropriate type
+     * @param message server response message
+     * @throws Error object in case of any insconsistency
+     * @returns client message data which is mapped to the server response
+     */
     private checkMessageConsistency(serverMessage: Message) : MessageInfo
     {
         const clientMessageInfo = this.requests.get(serverMessage.requestId);
         if (clientMessageInfo === undefined)
         {
-            throw Error("Server message " + serverMessage + " came too late!");
+            throw Error("Server message of type: " + serverMessage.type + " with requestId: " + serverMessage.requestId + " came too late!");
         }
 
         if (clientMessageInfo.msg.requestId !== serverMessage.requestId)
@@ -164,49 +201,18 @@ class Client
         return clientMessageInfo;
     }
 
+    /**
+     * Prepares client response for the current server message.
+     * @param message server message
+     * @returns client response message or null if no response required
+     */
     private async prepareResponse(serverMessage: Message) : Promise<Message | null>
     {
         let result = null;
 
         try
         {
-            const clientMessageInfo = this.checkMessageConsistency(serverMessage);
-
-            if (serverMessage.type === MessageType.RESULT_OK)
-            {   
-                if (clientMessageInfo.msg.type === MessageType.HELLO)
-                {
-                    this.isServerOnline = true;
-                    this.sendHeartBeat();
-                    this.requests.delete(serverMessage.requestId);
-                }            
-                else if (clientMessageInfo.msg.type === MessageType.HEARTBEAT)
-                {
-                    //continue to send heartbeat message by protocol
-                }
-                else if (clientMessageInfo.msg.type === MessageType.GET_CLIENTS)
-                {
-                    console.log("Available clients on-line: ", serverMessage.data);
-                    this.requests.delete(serverMessage.requestId);
-                }
-                else
-                {
-                    //skip other message types
-                }
-            }
-            else if (serverMessage.type === MessageType.RESULT_ERROR)
-            {   
-                const msg = serverMessage as ResultError;
-                console.error("Server sent error result for request: ", msg.requestId,". ", msg.data.description);
-                this.requests.delete(serverMessage.requestId);
-            }
-            else if (serverMessage.type === MessageType.REQUEST_ERROR)
-            {   
-                const msg = serverMessage as RequestError;                
-                console.error("Server sent request error for request: ", msg.requestId,". ", msg.data.description);
-                this.requests.delete(serverMessage.requestId);
-            }
-            else if (serverMessage.type === MessageType.GET_CLIENT_DETAILS)
+            if (serverMessage.type === MessageType.GET_CLIENT_DETAILS)
             {
                 console.log("Client recieved GET_CLIENT_DETAILS request: ", serverMessage);
                 result = { type: MessageType.RESULT_OK, 
@@ -242,9 +248,61 @@ class Client
                 {
                     result = { type: MessageType.RESULT_ERROR, 
                                requestId: serverMessage.requestId,
-                               data: null }
+                               data: {description: "Wrong call signature for function " + msg.data.name}}
                 }            
             }
+            else 
+            {
+                const clientMessageInfo = this.checkMessageConsistency(serverMessage);
+
+                if (serverMessage.type === MessageType.RESULT_OK)
+                {   
+                    if (clientMessageInfo.msg.type === MessageType.HELLO)
+                    {
+                        console.log('Server got on-line!');
+                        this.lastHeartBeatTimeStamp = Date.now();
+                        const helloRequest = this.requests.get(serverMessage.requestId);
+                        if (helloRequest !== undefined)
+                        {
+                            clearInterval(helloRequest.timer);
+                            this.requests.delete(serverMessage.requestId);
+                        }                        
+                        this.sendHeartBeat();                       
+                    }            
+                    else if (clientMessageInfo.msg.type === MessageType.HEARTBEAT)
+                    {
+                        this.lastHeartBeatTimeStamp = Date.now();
+                    }
+                    else if (clientMessageInfo.msg.type === MessageType.GET_CLIENTS)
+                    {
+                        const clientsInfo = serverMessage.data as {id: UUID; capacities: string[]}[];
+                        console.log("Available clients on-line:\n", clientsInfo);                        
+                        
+                        const msg = this.requests.get(serverMessage.requestId)
+                        if (msg !== undefined)
+                        {
+                            clearTimeout(msg.timer);
+                            this.requests.delete(serverMessage.requestId);
+                        }                        
+                    }
+                    else
+                    {
+                        //skip other message types
+                    }
+                }
+                else if (serverMessage.type === MessageType.RESULT_ERROR)
+                {   
+                    const msg = serverMessage as ResultError;
+                    console.error("Server sent error result for request: ", msg.requestId,". ", msg.data.description);
+                    this.requests.delete(serverMessage.requestId);
+                }
+                else if (serverMessage.type === MessageType.REQUEST_ERROR)
+                {   
+                    const msg = serverMessage as RequestError;                
+                    console.error("Server sent request error for request: ", msg.requestId,". ", msg.data.description);
+                    this.requests.delete(serverMessage.requestId);
+                }            
+            }            
         }
         catch(error)
         {
@@ -276,15 +334,28 @@ class Client
 
         this.socket.on('message', async (msg, rinfo) => {
             console.log(`client got: ${msg} from ${rinfo.address}:${rinfo.port}`);
-
-            const message = this.messageParser.parse(msg, this.allowedMessages);
-            this.prepareResponse(message).then((response) =>
+            try 
             {
-                if (response !== null)
+                const message = this.messageParser.parse(msg, this.allowedMessages);
+                this.prepareResponse(message).then((response) =>
                 {
-                    this.socket.send(Buffer.from(JSON.stringify(response)), this.serverPort);
-                }
-            })
+                    if (response !== null)
+                    {
+                        if (response.type !== MessageType.REQUEST_ERROR)
+                        {
+                            this.socket.send(Buffer.from(JSON.stringify(response)), this.serverPort);
+                        }
+                        else
+                        {
+                            console.error((response as RequestError).data.description)
+                        }
+                    }
+                })
+            }
+            catch(error)
+            {
+                console.error((error as Error).message);
+            }
         });
     }
     
@@ -293,55 +364,37 @@ class Client
         setTimeout(() => 
         {
             console.log("Launched client!");
-            this.socket.bind(ClientPort);
+            this.socket.bind(this.clientPort);
         });
     }
-
+    /**
+     * Periodically sends GET_CLIENTS request just for testing
+     */
     public sendGetClients()
     {
-        setInterval(() =>{
-            const message : GetClients = 
+        setInterval(() =>
+        {
+            if (this.isServerOnline())
             {
-                type: MessageType.GET_CLIENTS,
-                requestId: this.requesIdGenerator.next(),
-                data: null
-            };
-            this.socket.send(Buffer.from(JSON.stringify(message)), this.serverPort);
-            const timer = setTimeout(() =>
-            {
-                console.error("No response from server for request: ", message.requestId);
-                this.requests.delete(message.requestId);
-            }, 2000)
-
-            this.requests.set(message.requestId, {msg: message, timer: timer});
-        }
-        , 5000);
-    }
-
-    public exit()
-    {
-        this.socket.close();
+                const message : GetClients = 
+                {
+                    type: MessageType.GET_CLIENTS,
+                    requestId: this.requesIdGenerator.next(),
+                    data: null
+                };
+                this.socket.send(Buffer.from(JSON.stringify(message)), this.serverPort);
+                const timer = setTimeout(() =>
+                {
+                    console.error("No response from server for request: ", message.requestId);
+                    this.requests.delete(message.requestId);
+                }, 2000)
+    
+                this.requests.set(message.requestId, {msg: message, timer: timer});
+            }
+        }, 60000);
     }
 }
-
-console.log(randomNumber(5, 20));
-console.log(clientFreeMemory());
-console.log(hddSpeed());
 
 const client = new Client();
 client.run();
 client.sendGetClients();
-
-// setTimeout(() =>
-// {
-//     const readlineSync = require('readline-sync');
-//     readlineSync.promptCLLoop({
-//         get: () => { 
-//             client.sendGetClients();
-//         },
-//         quit: () => { 
-//             client.exit();
-//             return true; 
-//         }
-//     });
-// });

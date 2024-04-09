@@ -2,14 +2,14 @@ import * as dgram from 'node:dgram';
 import { Buffer } from 'node:buffer';
 import { CallFunction, ClientInfo, GetClients, GetClientDetails, 
         HeartBeat, Hello, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk } from './protocol';
-import { MessageParser, ReqestIdGenerator, ServerPort } from './common'
+import { HeartBeatTimeout, MessageParser, ReqestIdGenerator, ServerPort } from './common'
 import { UUID } from 'node:crypto';
 
 type ClientRecord = 
 {
     info: ClientInfo;
     port: number;
-    lastHeartBeat: Date;
+    lastUpdateTime: number;
 }
 
 class Server 
@@ -28,13 +28,31 @@ class Server
         MessageType.RESULT_OK
     ];
     private clients = new Map<UUID, ClientRecord>();
+    private checkClientsOnlineTimer: NodeJS.Timeout;
 
+    /**
+     * Checks whether current client is on-line
+     * @param clientId UUID of the client
+     * @returns true if client is on-line otherwise false
+     */
+    private isClientOnline(clientId: UUID): boolean
+    {
+        return this.clients.has(clientId);
+    }
+
+    /**
+     * Checks if there is appropriate mapping between server request and client response.
+     * Also checks that response has appropriate type
+     * @param message client response message
+     * @throws Error object in case of any insconsistency
+     * @returns server message data which is mapped to the client response
+     */
     private checkMessageConsistency(clientMessage: Message) : MessageInfo
     {
         const serverMessageInfo = this.requests.get(clientMessage.requestId);
         if (serverMessageInfo === undefined)
         {
-            throw Error("Client message " + clientMessage + " came too late!");
+            throw Error("Client message of type: " + clientMessage.type + " with requestId: " + clientMessage.requestId + " came too late!");
         }
 
         if (serverMessageInfo.msg.requestId !== clientMessage.requestId)
@@ -51,43 +69,126 @@ class Server
         return serverMessageInfo;
     }
 
-    private async prepareResponse(clientMessage: Message) : Promise<Message | null>
+    /**
+     * Prepares server response for the current client message.
+     * @param message client message
+     * @param port client's port
+     * @returns server response message or null if no response required
+     */
+    private async prepareResponse(clientMessage: Message, clientPort: number) : Promise<Message | null>
     {
-        
-        let result = null;
+        let result: Message | null = null;
 
         try
         {
-            const clientMessageInfo = this.checkMessageConsistency(clientMessage);
+            if (clientMessage.type === MessageType.HEARTBEAT)
+            {
+                const msg = clientMessage as HeartBeat;
+                const clienRecord = this.clients.get(msg.data.id);
+                if (clienRecord !== undefined)
+                {
+                    clienRecord.port = clientPort;
+                    clienRecord.lastUpdateTime = Date.now();
+                }
+                result = 
+                {
+                    type: MessageType.RESULT_OK,
+                    requestId: clientMessage.requestId,
+                    data: null
+                };
+            }
+            else if (clientMessage.type === MessageType.HELLO)
+            {
+                const msg = clientMessage as Hello;
+                this.clients.set(msg.data.id, {info: msg.data, port: clientPort, lastUpdateTime: Date.now()});
+                
+                result = 
+                {
+                    type: MessageType.RESULT_OK,
+                    requestId: clientMessage.requestId,
+                    data: null
+                };
+            }
+            else if (clientMessage.type === MessageType.GET_CLIENTS)
+            { 
+                const allClientsData : ClientInfo[] = [];
+                [...this.clients.values()].forEach((x) => allClientsData.push(x.info));
 
-            if (clientMessage.type === MessageType.RESULT_OK)
-            {   
-                if (clientMessageInfo.msg.type === MessageType.HELLO)
+                result = 
                 {
-                }            
-                else if (clientMessageInfo.msg.type === MessageType.HEARTBEAT)
-                {
+                    type: MessageType.RESULT_OK,
+                    requestId: clientMessage.requestId,
+                    data: allClientsData
+                };
+            }
+            else 
+            {
+                const serverMessageInfo = this.checkMessageConsistency(clientMessage);
+
+                if (clientMessage.type === MessageType.RESULT_OK)
+                {   
+                    console.log("Server received RESULT_OK message ", clientMessage);
+
+                    if (serverMessageInfo.msg.type === MessageType.GET_CLIENT_DETAILS)
+                    {
+                        const msgInfo = this.requests.get(clientMessage.requestId);
+                        if (msgInfo !== undefined)
+                        {
+                            clearTimeout(msgInfo.timer);
+                            this.requests.delete(clientMessage.requestId);
+                        }
+                    }            
+                    else if (serverMessageInfo.msg.type === MessageType.CALL_FUNCTION)
+                    {
+                        const msgInfo = this.requests.get(clientMessage.requestId);
+                        if (msgInfo !== undefined)
+                        {
+                            clearTimeout(msgInfo.timer);
+                            this.requests.delete(clientMessage.requestId);
+                        }
+                    }                
+                    else
+                    {
+                        //skip other message types
+                    }
                 }
-                else if (clientMessageInfo.msg.type === MessageType.GET_CLIENTS)
+                else if (clientMessage.type === MessageType.RESULT_ERROR)
                 {
+                    console.error("Server received RESULT_ERROR message ", clientMessage);
+                    if (serverMessageInfo.msg.type === MessageType.GET_CLIENT_DETAILS ||
+                        serverMessageInfo.msg.type === MessageType.CALL_FUNCTION)
+                    {
+                        const msgInfo = this.requests.get(clientMessage.requestId);
+                        if (msgInfo !== undefined)
+                        {
+                            clearTimeout(msgInfo.timer);
+                            this.requests.delete(clientMessage.requestId);
+                        }
+                    }                
+                    else
+                    {
+                        //skip other message types
+                    }
                 }
-                else
-                {
-                    //skip other message types
-                }
-            }
-            else if (clientMessage.type === MessageType.RESULT_ERROR)
-            {  
-            }
-            else if (clientMessage.type === MessageType.REQUEST_ERROR)
-            {               
-            }
-            else if (clientMessage.type === MessageType.GET_CLIENT_DETAILS)
-            {              
-            }
-            else if (clientMessage.type === MessageType.CALL_FUNCTION)
-            {                
-            }
+                else if (clientMessage.type === MessageType.REQUEST_ERROR)
+                {  
+                    console.error("Server received REQUEST_ERROR message ", clientMessage);
+                    if (serverMessageInfo.msg.type === MessageType.GET_CLIENT_DETAILS ||
+                        serverMessageInfo.msg.type === MessageType.CALL_FUNCTION)
+                    {
+                        const msgInfo = this.requests.get(clientMessage.requestId);
+                        if (msgInfo !== undefined)
+                        {
+                            clearTimeout(msgInfo.timer);
+                            this.requests.delete(clientMessage.requestId);
+                        }
+                    }                            
+                    else
+                    {
+                        //skip other message types
+                    }            
+                }                
+            }    
         }
         catch(error)
         {
@@ -97,6 +198,77 @@ class Server
         }
 
         return result;
+    }
+
+    /**
+     * Periodically sends GET_CLIENT_DETAILS request just for testing
+     */
+    public sendGetClientDetails()
+    {
+        setInterval(() =>
+        {
+            if (this.clients.size === 0)
+            {
+                return;
+            }
+
+            this.clients.forEach((clientRecord) =>
+            {
+                const message : GetClientDetails = 
+                {
+                    type: MessageType.GET_CLIENT_DETAILS,
+                    requestId: this.requesIdGenerator.next(),
+                    data: null
+                };
+
+                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port);
+                const timer = setTimeout(() =>
+                {
+                    console.error("No response from client for request: ", message.requestId);
+                    this.requests.delete(message.requestId);
+                }, 2000);
+    
+                this.requests.set(message.requestId, {msg: message, timer: timer});
+            }, 30000);
+        })
+    }
+
+    /**
+     * Periodically sends CALL_FUNCTION request just for testing
+     * @param functionName name of the function to call
+     * @param args function arguments
+     */
+    public sendCallFunction(functionName: string, args?: any)
+    {
+        setInterval(() =>
+        {
+            if (this.clients.size === 0)
+            {
+                return;
+            }
+
+            this.clients.forEach((clientRecord) =>
+            {
+                const message : CallFunction = 
+                {
+                    type: MessageType.CALL_FUNCTION,
+                    requestId: this.requesIdGenerator.next(),
+                    data: {name: functionName, functionArgs: args}
+                };
+
+                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port);
+
+                // Check if client respond to the request after 2000 ms.
+                // If no response has arrived delete message from internal cache of messages
+                const timer = setTimeout(() =>
+                {
+                    console.error("No response from client for request: ", message.requestId);
+                    this.requests.delete(message.requestId);
+                }, 2000);
+
+                this.requests.set(message.requestId, {msg: message, timer: timer});
+            })            
+        }, 50000);
     }
 
     constructor()
@@ -110,28 +282,61 @@ class Server
         
         this.socket.on('message', (msg, rinfo) => {
             console.log(`server got: ${msg} from ${rinfo.address}:${rinfo.port}`);
-            const message = this.messageParser.parse(msg, this.allowedMessages);
-            this.prepareResponse(message).then((response) =>
+            try 
             {
-                if (response !== null)
+                const message = this.messageParser.parse(msg, this.allowedMessages);
+                this.prepareResponse(message, rinfo.port).then((response) =>
                 {
-                    this.socket.send(Buffer.from(JSON.stringify(response)), rinfo.port);
-                }
-            })
-
+                    if (response !== null)
+                    {
+                        if (response.type !== MessageType.REQUEST_ERROR)
+                        {
+                            this.socket.send(Buffer.from(JSON.stringify(response)), rinfo.port);
+                        }
+                        else
+                        {
+                            console.error((response as RequestError).data.description)
+                        }
+                    }
+                })
+            }
+            catch(error)
+            {
+                console.error((error as Error).message);
+            }
         });
         
         this.socket.on('listening', () => {
             const address = this.socket.address();
             console.log(`server listening ${address.address}:${address.port}`);
-        });        
+        });
+        
+        this.checkClientsOnlineTimer = setInterval(() =>
+        {
+            [...this.clients.values()].forEach((x) => 
+            {
+                if ((Date.now() - x.lastUpdateTime) > HeartBeatTimeout)
+                {
+                    console.log("Client ", x.info.id, " got offline!");
+                    this.clients.delete(x.info.id);
+                }
+            });
+        }, 5000);
     }
 
     public run()
     {
-        this.socket.bind(ServerPort);
+        setTimeout(() =>
+        {
+            console.log('Server has been started!');
+            this.socket.bind(ServerPort);
+        });
     }
 }
 
-let server = new Server();
+const server = new Server();
 server.run();
+server.sendCallFunction("randomNumber", [0, 100]);
+server.sendCallFunction("clientFreeMemory");
+server.sendCallFunction("hddSpeed");
+server.sendGetClientDetails();
