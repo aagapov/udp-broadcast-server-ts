@@ -40,7 +40,7 @@ type ClientInfo =
 {
     capacities: string[];
     id: UUID;
-    //icon: ImageData
+    icon: Buffer;
 }
 
 type Hello = Message & 

@@ -5,7 +5,7 @@ import {CallFunction, ClientInfo, GetClients, GetClientDetails,
 import { HeartBeatTimeout, HelloTimeout, ServerPort, MessageParser, ReqestIdGenerator } from "./common"
 import { UUID, randomInt, randomUUID } from 'node:crypto';
 import { freemem } from 'node:os';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
 /**
@@ -86,6 +86,7 @@ class Client
     private readonly heartbeatTimeout = HeartBeatTimeout;
     private readonly availableFunctions = ["randomNumber, clientFreeMemory, hddSpeed"];
     private lastHeartBeatTimeStamp = 0;
+    private readonly iconBuffer : Buffer;
    
     /**
      * Checks if server is on-line
@@ -104,14 +105,33 @@ class Client
     {
         return {type: MessageType.HELLO, 
                 requestId: this.requesIdGenerator.next(), 
-                data: {capacities: this.availableFunctions, id: this.uuid}}
+                data: {capacities: this.availableFunctions, id: this.uuid, icon: this.iconBuffer}}
     }
 
+    /**
+     * Generates HeartBeat message
+     * @returns message of MessageType.HeartBeat
+     */
     private getHearbeatMessage(): HeartBeat
     {
         return {type: MessageType.HEARTBEAT, requestId: this.requesIdGenerator.next(), data: { id: this.uuid }};
     }
-
+    
+    /**
+     * Callback for send message error handling
+     */
+    private sendErrorCallback(msg: Message, error: Error | null) 
+    {
+        if (error !== null)
+        {
+            console.error("client: ", this.uuid, " FAILED to send message: ", error.message);
+        }
+        else 
+        {
+            console.log("client: ", this.uuid, " sent message: ", msg);
+        }
+    }
+    
     /**
      * Periodically sends HELLO message
      */
@@ -121,8 +141,7 @@ class Client
         const message = Buffer.from(JSON.stringify(msg));
         const sendHelloCallBack = () =>
         {
-            this.socket.send(message, this.serverPort);
-            console.log("client: ", this.uuid, " sent HELLO message: ", msg);           
+            this.socket.send(message, this.serverPort, (error) => this.sendErrorCallback(msg, error));
         }
 
         const oneShotTimer = setTimeout(sendHelloCallBack, 0);
@@ -217,7 +236,7 @@ class Client
                 console.log("Client recieved GET_CLIENT_DETAILS request: ", serverMessage);
                 result = { type: MessageType.RESULT_OK, 
                            requestId: serverMessage.requestId,
-                           data: {capacities: this.availableFunctions, id: this.uuid} }
+                           data: {capacities: this.availableFunctions, id: this.uuid, icon: this.iconBuffer} }
             }
             else if (serverMessage.type === MessageType.CALL_FUNCTION)
             {
@@ -318,6 +337,7 @@ class Client
     {
         this.socket = dgram.createSocket('udp4');
         this.uuid = randomUUID();
+        this.iconBuffer = readFileSync("icon.png"); //Buffer.alloc(32000);//
 
         this.socket.on('error', (err) => {
             console.error(`client error:\n${err.stack}`);
@@ -343,7 +363,9 @@ class Client
                     {
                         if (response.type !== MessageType.REQUEST_ERROR)
                         {
-                            this.socket.send(Buffer.from(JSON.stringify(response)), this.serverPort);
+                            this.socket.send(Buffer.from(JSON.stringify(response)), 
+                                             this.serverPort, 
+                                            (error) => this.sendErrorCallback(response, error));
                         }
                         else
                         {
@@ -382,7 +404,7 @@ class Client
                     requestId: this.requesIdGenerator.next(),
                     data: null
                 };
-                this.socket.send(Buffer.from(JSON.stringify(message)), this.serverPort);
+                this.socket.send(Buffer.from(JSON.stringify(message)), this.serverPort, (error) => this.sendErrorCallback(message, error));
                 const timer = setTimeout(() =>
                 {
                     console.error("No response from server for request: ", message.requestId);

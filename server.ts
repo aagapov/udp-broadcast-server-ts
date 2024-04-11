@@ -16,7 +16,7 @@ class Server
 {
     private socket: dgram.Socket;
     private readonly requesIdGenerator = new ReqestIdGenerator();
-    private requests = new Map<number, MessageInfo>();
+    private requests = new Map<number, MessageInfo>(); // here we store all pending requests
     private readonly messageParser = new MessageParser();
     private readonly allowedMessages : MessageType[] = 
     [
@@ -27,7 +27,7 @@ class Server
         MessageType.RESULT_ERROR,
         MessageType.RESULT_OK
     ];
-    private clients = new Map<UUID, ClientRecord>();
+    private clients = new Map<UUID, ClientRecord>(); // here we store all clients on-line
     private checkClientsOnlineTimer: NodeJS.Timeout;
 
     /**
@@ -38,6 +38,21 @@ class Server
     private isClientOnline(clientId: UUID): boolean
     {
         return this.clients.has(clientId);
+    }
+
+    /**
+     * Callback for send message error handling
+     */
+    private sendErrorCallback(msg: Message, error: Error | null) 
+    {
+        if (error !== null)
+        {
+            console.error("server FAILED to send message: ", error.message);
+        }
+        else 
+        {
+            console.log("server: sent message: ", msg);
+        }
     }
 
     /**
@@ -83,6 +98,7 @@ class Server
         {
             if (clientMessage.type === MessageType.HEARTBEAT)
             {
+                console.log("Server received HEARTBEAT message ", clientMessage);
                 const msg = clientMessage as HeartBeat;
                 const clienRecord = this.clients.get(msg.data.id);
                 if (clienRecord !== undefined)
@@ -99,6 +115,7 @@ class Server
             }
             else if (clientMessage.type === MessageType.HELLO)
             {
+                console.log("Server received HELLO message ", clientMessage);
                 const msg = clientMessage as Hello;
                 this.clients.set(msg.data.id, {info: msg.data, port: clientPort, lastUpdateTime: Date.now()});
                 
@@ -111,6 +128,7 @@ class Server
             }
             else if (clientMessage.type === MessageType.GET_CLIENTS)
             { 
+                console.log("Server received GET_CLIENTS message ", clientMessage);
                 const allClientsData : ClientInfo[] = [];
                 [...this.clients.values()].forEach((x) => allClientsData.push(x.info));
 
@@ -221,7 +239,7 @@ class Server
                     data: null
                 };
 
-                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port);
+                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port, (error) => this.sendErrorCallback(message, error));
                 const timer = setTimeout(() =>
                 {
                     console.error("No response from client for request: ", message.requestId);
@@ -256,7 +274,7 @@ class Server
                     data: {name: functionName, functionArgs: args}
                 };
 
-                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port);
+                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port, (error) => this.sendErrorCallback(message, error));
 
                 // Check if client respond to the request after 2000 ms.
                 // If no response has arrived delete message from internal cache of messages
@@ -281,7 +299,6 @@ class Server
         });
         
         this.socket.on('message', (msg, rinfo) => {
-            console.log(`server got: ${msg} from ${rinfo.address}:${rinfo.port}`);
             try 
             {
                 const message = this.messageParser.parse(msg, this.allowedMessages);
@@ -291,7 +308,7 @@ class Server
                     {
                         if (response.type !== MessageType.REQUEST_ERROR)
                         {
-                            this.socket.send(Buffer.from(JSON.stringify(response)), rinfo.port);
+                            this.socket.send(Buffer.from(JSON.stringify(response)), rinfo.port, (error) => this.sendErrorCallback(response, error));
                         }
                         else
                         {
@@ -330,13 +347,13 @@ class Server
         {
             console.log('Server has been started!');
             this.socket.bind(ServerPort);
-        });
+        }, 0);
     }
 }
 
 const server = new Server();
-server.run();
 server.sendCallFunction("randomNumber", [0, 100]);
 server.sendCallFunction("clientFreeMemory");
 server.sendCallFunction("hddSpeed");
 server.sendGetClientDetails();
+server.run();
