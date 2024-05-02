@@ -108,6 +108,6 @@
   },
 
   "files": [    
-    "server.ts", "client.ts", "protocol.ts", "common.ts"
+    "server.ts", "client.ts", "protocol.ts", "common.ts", "httpserver.ts"
   ]
 }

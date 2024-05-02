@@ -5,6 +5,7 @@ import { CallFunction, ClientInfo, GetClients, GetClientDetails,
 export const ServerPort = 41234;
 export const HelloTimeout = 20000;
 export const HeartBeatTimeout = 15000;
+export const ResolveRequestTimeout = 5000;
 export const AllowedFunctions = ['randomNumber', 'clientFreeMemory', 'hddSpeed'];
 
 export class MessageParser

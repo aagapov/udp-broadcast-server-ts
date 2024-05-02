@@ -1,22 +1,22 @@
 import * as dgram from 'node:dgram';
 import { Buffer } from 'node:buffer';
 import { CallFunction, ClientInfo, GetClients, GetClientDetails, 
-        HeartBeat, Hello, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk } from './protocol';
-import { HeartBeatTimeout, MessageParser, ReqestIdGenerator, ServerPort } from './common'
+         HeartBeat, Hello, IDeferred, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk } from './protocol';
+import { HeartBeatTimeout, MessageParser, ReqestIdGenerator, ResolveRequestTimeout, ServerPort } from './common'
 import { UUID } from 'node:crypto';
 
-type ClientRecord = 
+export type ClientRecord = 
 {
     info: ClientInfo;
     port: number;
     lastUpdateTime: number;
 }
 
-class Server 
+export class Server 
 {
     private socket: dgram.Socket;
     private readonly requesIdGenerator = new ReqestIdGenerator();
-    private requests = new Map<number, MessageInfo>(); // here we store all pending requests
+    public requests = new Map<number, MessageInfo>(); // here we store all pending requests
     private readonly messageParser = new MessageParser();
     private readonly allowedMessages : MessageType[] = 
     [
@@ -27,8 +27,9 @@ class Server
         MessageType.RESULT_ERROR,
         MessageType.RESULT_OK
     ];
-    private clients = new Map<UUID, ClientRecord>(); // here we store all clients on-line
+    public readonly clients = new Map<UUID, ClientRecord>(); // here we store all clients on-line
     private checkClientsOnlineTimer: NodeJS.Timeout;
+    private readonly httpPort = process.env.PORT || 3000;
 
     /**
      * Checks whether current client is on-line
@@ -98,7 +99,6 @@ class Server
         {
             if (clientMessage.type === MessageType.HEARTBEAT)
             {
-                console.log("Server received HEARTBEAT message ", clientMessage);
                 const msg = clientMessage as HeartBeat;
                 const clienRecord = this.clients.get(msg.data.id);
                 if (clienRecord !== undefined)
@@ -129,8 +129,8 @@ class Server
             else if (clientMessage.type === MessageType.GET_CLIENTS)
             { 
                 console.log("Server received GET_CLIENTS message ", clientMessage);
-                const allClientsData : ClientInfo[] = [];
-                [...this.clients.values()].forEach((x) => allClientsData.push(x.info));
+                const allClientsData : {capacities: string[]}[] = [];
+                [...this.clients.values()].forEach((x) => allClientsData.push({capacities: x.info.capacities}));
 
                 result = 
                 {
@@ -153,7 +153,15 @@ class Server
                         if (msgInfo !== undefined)
                         {
                             clearTimeout(msgInfo.timer);
-                            this.requests.delete(clientMessage.requestId);
+                            if (msgInfo.result !== undefined)
+                            {
+                                msgInfo.result.resolve(clientMessage.data);
+                                this.requests.delete(clientMessage.requestId);
+                            }
+                            else
+                            {
+                                throw Error(`Failed to find request id = ${clientMessage.requestId} in cache`);
+                            }
                         }
                     }            
                     else if (serverMessageInfo.msg.type === MessageType.CALL_FUNCTION)
@@ -162,8 +170,16 @@ class Server
                         if (msgInfo !== undefined)
                         {
                             clearTimeout(msgInfo.timer);
-                            this.requests.delete(clientMessage.requestId);
-                        }
+                            if (msgInfo.result !== undefined)
+                            {
+                                msgInfo.result.resolve(clientMessage.data.result);
+                                this.requests.delete(clientMessage.requestId);
+                            }
+                            else
+                            {
+                                throw Error(`Failed to find request id = ${clientMessage.requestId} in cache`);
+                            }
+                        }                        
                     }                
                     else
                     {
@@ -180,6 +196,7 @@ class Server
                         if (msgInfo !== undefined)
                         {
                             clearTimeout(msgInfo.timer);
+                            msgInfo.result?.resolve(undefined);
                             this.requests.delete(clientMessage.requestId);
                         }
                     }                
@@ -198,6 +215,7 @@ class Server
                         if (msgInfo !== undefined)
                         {
                             clearTimeout(msgInfo.timer);
+                            msgInfo.result?.resolve(undefined);
                             this.requests.delete(clientMessage.requestId);
                         }
                     }                            
@@ -219,86 +237,105 @@ class Server
     }
 
     /**
-     * Periodically sends GET_CLIENT_DETAILS request just for testing
+     * Sends GET_CLIENT_DETAILS request to the client
+     * @param clientId client UUID
      */
-    public sendGetClientDetails()
+    public async sendGetClientDetails(clientId: UUID): Promise<number | ClientInfo | undefined>
     {
-        setInterval(() =>
+        const clientRecord = this.clients.get(clientId)
+        if (clientRecord !== undefined)
         {
-            if (this.clients.size === 0)
+            console.log("Client ", clientId, " is online")
+            const message : GetClientDetails = 
             {
-                return;
-            }
+                type: MessageType.GET_CLIENT_DETAILS,
+                requestId: this.requesIdGenerator.next(),
+                data: null
+            };
 
-            this.clients.forEach((clientRecord) =>
+            this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port, (error) => this.sendErrorCallback(message, error));
+            const timer = setTimeout(() =>
             {
-                const message : GetClientDetails = 
-                {
-                    type: MessageType.GET_CLIENT_DETAILS,
-                    requestId: this.requesIdGenerator.next(),
-                    data: null
-                };
+                console.error("No response from client for request: ", message.requestId);
+                this.requests.delete(message.requestId);
+            }, 2000);
 
-                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port, (error) => this.sendErrorCallback(message, error));
-                const timer = setTimeout(() =>
-                {
-                    console.error("No response from client for request: ", message.requestId);
-                    this.requests.delete(message.requestId);
-                }, 2000);
-    
-                this.requests.set(message.requestId, {msg: message, timer: timer});
-            });
-        }, 30000)
+            //Register promise with future result in cache. It will be resolved later after client response            
+            let resolveHandler: IDeferred<number | ClientInfo | undefined>['resolve'] = (value) => { console.log(value) };
+            const resultPromise: IDeferred<number | ClientInfo | undefined>['promise'] = new Promise((resolve) => 
+            {
+                resolveHandler = resolve;
+            })
+            this.requests.set(message.requestId, {msg: message, 
+                                                  timer: timer, 
+                                                  result: {promise: resultPromise, 
+                                                           resolve: resolveHandler}});
+
+            console.log("Wait for request id ", message.requestId);
+            return resultPromise;    
+        }
+        
+        console.error("There is no such client with id: ", clientId);
+        return undefined;
     }
 
     /**
-     * Periodically sends CALL_FUNCTION request just for testing
+     * Sends CALL_FUNCTION request
+     * @param clientId client UUID
      * @param functionName name of the function to call
      * @param args function arguments
      */
-    public sendCallFunction(functionName: string, args?: any)
+    public async callFunction(clientId: UUID, functionName: string, args?: any) :  Promise<number | ClientInfo | undefined>
     {
-        setInterval(() =>
+        const clientRecord = this.clients.get(clientId);
+
+        if(clientRecord !== undefined)
         {
-            if (this.clients.size === 0)
+            const message : CallFunction = 
             {
-                return;
-            }
+                type: MessageType.CALL_FUNCTION,
+                requestId: this.requesIdGenerator.next(),
+                data: {name: functionName, functionArgs: args}
+            };
 
-            this.clients.forEach((clientRecord) =>
+            this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port, (error) => this.sendErrorCallback(message, error));
+
+            // Check if client respond to the request after 2000 ms.
+            // If no response has arrived delete message from internal cache of messages
+            const timer = setTimeout(() =>
             {
-                const message : CallFunction = 
-                {
-                    type: MessageType.CALL_FUNCTION,
-                    requestId: this.requesIdGenerator.next(),
-                    data: {name: functionName, functionArgs: args}
-                };
+                console.error("No response from client for request: ", message.requestId);
+                this.requests.delete(message.requestId);
+            }, 2000);
 
-                this.socket.send(Buffer.from(JSON.stringify(message)), clientRecord.port, (error) => this.sendErrorCallback(message, error));
-
-                // Check if client respond to the request after 2000 ms.
-                // If no response has arrived delete message from internal cache of messages
-                const timer = setTimeout(() =>
-                {
-                    console.error("No response from client for request: ", message.requestId);
-                    this.requests.delete(message.requestId);
-                }, 2000);
-
-                this.requests.set(message.requestId, {msg: message, timer: timer});
-            })            
-        }, 50000);
+            //Register promise with future result in cache. It will be resolved later after client response  
+            let resolveHandler: IDeferred<number | ClientInfo | undefined>['resolve'] = (value) => { console.log(value) };
+            const resultPromise: IDeferred<number | ClientInfo | undefined>['promise'] = new Promise((resolve) => 
+            {
+                resolveHandler = resolve;
+            })
+            this.requests.set(message.requestId, {msg: message, 
+                                                  timer: timer, 
+                                                  result: {promise: resultPromise, 
+                                                           resolve: resolveHandler}});
+            return resultPromise;
+        }
+        console.error("There is no such client with id: ", clientId);
+        return undefined;
     }
 
     constructor()
     {
         this.socket = dgram.createSocket('udp4');
 
-        this.socket.on('error', (err) => {
+        this.socket.on('error', (err) => 
+        {
             console.error(`server error:\n${err.stack}`);
             this.socket.close();
         });
         
-        this.socket.on('message', (msg, rinfo) => {
+        this.socket.on('message', async (msg, rinfo) => 
+        {
             try 
             {
                 const message = this.messageParser.parse(msg, this.allowedMessages);
@@ -330,30 +367,20 @@ class Server
         
         this.checkClientsOnlineTimer = setInterval(() =>
         {
-            [...this.clients.values()].forEach((x) => 
+            [...this.clients.values()].forEach((client) => 
             {
-                if ((Date.now() - x.lastUpdateTime) > HeartBeatTimeout)
+                if ((Date.now() - client.lastUpdateTime) > HeartBeatTimeout)
                 {
-                    console.log("Client ", x.info.id, " got offline!");
-                    this.clients.delete(x.info.id);
+                    console.log("Client ", client.info.id, " got offline!");
+                    this.clients.delete(client.info.id);
                 }
             });
         }, 5000);
     }
 
-    public run()
+    public async run()
     {
-        setTimeout(() =>
-        {
-            console.log('Server has been started!');
-            this.socket.bind(ServerPort);
-        }, 0);
+        console.log('Server has been started!');
+        this.socket.bind(ServerPort);
     }
 }
-
-const server = new Server();
-server.sendCallFunction("randomNumber", [0, 100]);
-server.sendCallFunction("clientFreeMemory");
-server.sendCallFunction("hddSpeed");
-server.sendGetClientDetails();
-server.run();

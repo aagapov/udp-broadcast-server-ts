@@ -1,6 +1,6 @@
 import { UUID } from "crypto"
 
-enum MessageType 
+export enum MessageType 
 {
     CALL_FUNCTION = 'CALL_FUNCTION',
     GET_CLIENT_DETAILS = 'GET_CLIENT_DETAILS',
@@ -12,62 +12,62 @@ enum MessageType
     RESULT_OK   = 'RESULT_OK',    
 }
 
-type Message =
+export type Message =
 {
     type: MessageType;
     requestId: number;
     data?: any
 }
 
-type RequestError = Message & 
+export type RequestError = Message & 
 {
     type: MessageType.REQUEST_ERROR;
     data: {description: string};
 }
 
-type ResultError = Message &
+export type ResultError = Message &
 {
     type: MessageType.RESULT_ERROR;
     data: {description: string};
 }
 
-type ResultOk = Message & 
+export type ResultOk = Message & 
 {
     type: MessageType.RESULT_OK;
 }
 
-type ClientInfo = 
+export type ClientInfo = 
 {
     capacities: string[];
     id: UUID;
-    icon: Buffer;
+    icon: string;
 }
 
-type Hello = Message & 
+export type Hello = Message & 
 {
     type: MessageType.HELLO;
     data: ClientInfo | null;
 }
 
-type GetClients = Message & 
+export type GetClients = Message & 
 {
     type: MessageType.GET_CLIENTS;
     data: null
 }
 
-type HeartBeat = Message & 
+export type HeartBeat = Message & 
 {
     type: MessageType.HEARTBEAT;
     data: {id: UUID}
 }
 
-type GetClientDetails = Message & 
+export type GetClientDetails = Message & 
 {
     type: MessageType.GET_CLIENT_DETAILS;
     data: null;
 }
 
-type CallFunction = Message & 
+export type CallFunction = Message & 
 {
     type: MessageType.CALL_FUNCTION;
     data: { 
@@ -75,13 +75,16 @@ type CallFunction = Message &
     }
 }
 
-type MessageInfo = 
+// Promise with external resolve function
+export interface IDeferred<T> 
+{
+    promise: Promise<T>;
+    resolve: (value: T | PromiseLike<T>) => void;
+}
+
+export type MessageInfo = 
 {
     msg: Message; 
     timer: NodeJS.Timeout;
+    result?: IDeferred<undefined | number | ClientInfo>    
 }
-
-export {CallFunction, ClientInfo, 
-        GetClients, GetClientDetails, HeartBeat, 
-        Hello, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk };
-

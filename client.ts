@@ -1,12 +1,35 @@
 import * as dgram from 'node:dgram';
 import { Buffer } from 'node:buffer';
-import {CallFunction, ClientInfo, GetClients, GetClientDetails, 
+import { CallFunction, ClientInfo, GetClients, GetClientDetails, 
     HeartBeat, Hello, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk } from './protocol';
 import { HeartBeatTimeout, HelloTimeout, ServerPort, MessageParser, ReqestIdGenerator } from "./common"
 import { UUID, randomInt, randomUUID } from 'node:crypto';
+import fs from 'fs';
 import { freemem } from 'node:os';
-import { createWriteStream, readFileSync } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { performance } from 'node:perf_hooks';
+import path from 'path';
+
+function convertImgTo64Base(imgPath: string) : string
+{
+    try 
+    {
+        // read image file
+        const base64Image = fs.readFileSync(imgPath);
+            
+        // get image file extension name
+        const extensionName = path.extname(imgPath);
+        
+        // combine all strings
+        return `data:image/${extensionName.split('.').pop()};base64,${base64Image.toString('base64')}`;
+    }    
+    catch(err)
+    {
+        console.error("Failed to read image ", imgPath, " ", err);
+    }
+
+    return "";
+}
 
 /**
  * @returns random naumbe in range [min, max]
@@ -38,9 +61,9 @@ function hddSpeed() : number
         fileStream.write(chunk);
     }
     fileStream.end();
-    
+
     const toc = performance.now();
-    
+
     return toc - tic;
 }
 
@@ -53,7 +76,10 @@ function checkFunctionSignture(functionName: string, args: any) : boolean
     if (functionName === 'randomNumber') 
     {
         const array = args as number[];
-        return array.length === 2 && !Number.isNaN(Number(args[0])) && !Number.isNaN(Number(args[1]));
+        return array.length === 2 && 
+               !Number.isNaN(Number(args[0])) && 
+               !Number.isNaN(Number(args[1])) && 
+               Number(args[0]) <= Number(args[1]);
     }
 
     if (functionName === 'clientFreeMemory' ||
@@ -86,7 +112,7 @@ class Client
     private readonly heartbeatTimeout = HeartBeatTimeout;
     private readonly availableFunctions = ["randomNumber, clientFreeMemory, hddSpeed"];
     private lastHeartBeatTimeStamp = 0;
-    private readonly iconBuffer : Buffer;
+    private readonly iconBuffer : string;
    
     /**
      * Checks if server is on-line
@@ -171,7 +197,7 @@ class Client
         const timer = setInterval(() => 
         {
             this.socket.send(message, this.serverPort);
-            console.log("client: ", this.uuid, " sent HEARTBEAT message: ", msg);
+            //console.log("client: ", this.uuid, " sent HEARTBEAT message: ", msg);
             //check response timer
             setTimeout(() =>
             {
@@ -202,7 +228,7 @@ class Client
         const clientMessageInfo = this.requests.get(serverMessage.requestId);
         if (clientMessageInfo === undefined)
         {
-            throw Error("Server message of type: " + serverMessage.type + " with requestId: " + serverMessage.requestId + " came too late!");
+            throw Error(`Server message of type: ${serverMessage.type} with requestId: ${serverMessage.requestId} came too late!`);
         }
 
         if (clientMessageInfo.msg.requestId !== serverMessage.requestId)
@@ -261,13 +287,13 @@ class Client
                     
                     result = { type: MessageType.RESULT_OK, 
                                requestId: serverMessage.requestId,
-                               data: res }                
+                               data: {id: this.uuid, result: res} }                
                 }
                 else 
                 {
                     result = { type: MessageType.RESULT_ERROR, 
                                requestId: serverMessage.requestId,
-                               data: {description: "Wrong call signature for function " + msg.data.name}}
+                               data: {description: `Wrong call signature for function ${msg.data.name}`}}
                 }            
             }
             else 
@@ -337,7 +363,7 @@ class Client
     {
         this.socket = dgram.createSocket('udp4');
         this.uuid = randomUUID();
-        this.iconBuffer = readFileSync("icon.png"); //Buffer.alloc(32000);//
+        this.iconBuffer = convertImgTo64Base("icon.png");
 
         this.socket.on('error', (err) => {
             console.error(`client error:\n${err.stack}`);
@@ -419,4 +445,3 @@ class Client
 
 const client = new Client();
 client.run();
-client.sendGetClients();
