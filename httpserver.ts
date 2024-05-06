@@ -1,6 +1,9 @@
 import express, { Express, Request, Response } from "express";
 import { Server } from "./server";
-import { UUID } from "crypto";
+import { UUID, createHash } from "crypto";
+import { PathLike } from "fs";
+import * as fs from 'node:fs';
+import path from "path";
 
 class HttpServer
 {
