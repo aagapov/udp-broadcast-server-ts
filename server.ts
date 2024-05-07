@@ -4,69 +4,6 @@ import { CallFunction, ClientInfo, GetClients, GetClientDetails,
          HeartBeat, Hello, IDeferred, Message, MessageInfo, MessageType, RequestError, ResultError, ResultOk } from './protocol';
 import { HeartBeatTimeout, MessageParser, ReqestIdGenerator, ResolveRequestTimeout, ServerPort } from './common'
 import { UUID, createHash } from 'node:crypto';
-import { PathLike } from "fs";
-import * as fs from 'node:fs';
-import path from "path";
-
-enum KeyErrors
-{
-    KEY_NOT_FOUND = 'KEY_NOT_FOUND',
-    KEY_TOO_SHORT = 'KEY_TOO_SHORT',
-    KEY_TOO_LONG = 'KEY_TOO_LONG',
-    UNAUTHORIZED = 'UNAUTHORIZED',
-};
-
-const keyAuth = Symbol("keyAuth"); 
-type AuthKey = { [keyAuth]: string };
-
-type HttpRequest<TThis> = (this: TThis, ...args: any) => Promise<number | ClientInfo | undefined>;
-
-type Decorator<TThis> = (
-  originalMethod: HttpRequest<TThis>,
-  context: ClassMethodDecoratorContext<TThis, HttpRequest<TThis>>
-) => HttpRequest<TThis>;
-
-function KeyProtected<TThis>(file: PathLike, authKey: AuthKey): Decorator<TThis> 
-{
-    function replacementMethod <TThis>(
-        originalMethod: HttpRequest<TThis>,
-        context: ClassMethodDecoratorContext<TThis, HttpRequest<TThis>>
-    )
-    {
-        if (fs.lstatSync(file).isDirectory())
-        {
-            file = path.join(file.toString(), 'key.txt');
-        }
-        const key = fs.readFileSync(file, 'utf8');
-
-        if (key.length == 0)
-        {
-            throw Error(KeyErrors.KEY_NOT_FOUND);
-        }
-        if (key.length < 8)
-        {
-            throw Error(KeyErrors.KEY_TOO_SHORT);
-        } 
-        if (key.length > 255)
-        {
-            throw Error(KeyErrors.KEY_TOO_LONG);
-        }
-
-        const hash = createHash('sha256');
-        hash.update(key);
-        
-        const authKeyHash = createHash('sha256');
-        authKeyHash.update(authKey[keyAuth]);
-
-        if (hash.digest('base64') !== authKeyHash.digest('base64'))
-        {
-            throw Error(KeyErrors.UNAUTHORIZED);
-        }      
-        return originalMethod;  
-    };
-
-    return replacementMethod;
-}
 
 export type ClientRecord = 
 {
@@ -303,7 +240,6 @@ export class Server
      * Sends GET_CLIENT_DETAILS request to the client
      * @param clientId client UUID
      */
-    @KeyProtected("key.txt", {[keyAuth]: 'AUTHORIZATION' })
     public async sendGetClientDetails(clientId: UUID): Promise<number | ClientInfo | undefined>
     {
         const clientRecord = this.clients.get(clientId)
@@ -349,7 +285,6 @@ export class Server
      * @param functionName name of the function to call
      * @param args function arguments
      */
-    @KeyProtected("key.txt", {[keyAuth]: 'AUTHORIZATION' })
     public async callFunction(clientId: UUID, functionName: string, args?: any) :  Promise<number | ClientInfo | undefined>
     {
         const clientRecord = this.clients.get(clientId);
